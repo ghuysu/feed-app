@@ -1,6 +1,8 @@
 const {validationResult} = require("express-validator");
 const fs = require("fs");
 const path = require("path");
+const {uploadImageToAWSS3, deleteImage} = require("../utils/awss3")
+const {deleteFile} = require("../utils/file")
 
 const io = require("../socket");
 const Post = require("../models/post");
@@ -32,9 +34,11 @@ exports.getPosts = async (req, res, next) => {
 };
 
 exports.createPost = async (req, res, next) => {
+  const imageUrl = req.file.path;
   const errors = validationResult(req);
   if(!errors.isEmpty())
   {
+    if(imageUrl) await deleteFile(imageUrl)
     const error = new Error("Validator failed, entered data is incorrect!");
     error.statusCode = 422;
     throw error;
@@ -45,13 +49,19 @@ exports.createPost = async (req, res, next) => {
     error.statusCode = 422;
     throw error;
   }
-  const imageUrl = req.file.path;
+
+  const imageBuffer = await fs.promises.readFile(imageUrl);
+  const imageName = Date.now() + path.basename(imageUrl)
+  const imageLocation = await uploadImageToAWSS3(imageBuffer, imageName)
+  await deleteFile(imageUrl)
+
   const title = req.body.title;
   const content = req.body.content;
   const post = new Post({
     title: title, 
     content: content,
-    imageUrl: imageUrl,
+    imageUrl: imageLocation,
+    imageName: imageName,
     creator: req.userId
   })
   try{
@@ -105,9 +115,12 @@ exports.getPost = async (req, res, next) => {
 };
 
 exports.updatePost = async (req, res, next) => {
+  let imageUrl
+  if(req.file) imageUrl = req.file.path
   const errors = validationResult(req);
   if(!errors.isEmpty())
   {
+    if(imageUrl) await deleteFile(imageUrl)
     const error = new Error("Validator failed, entered data is incorrect!");
     error.statusCode = 422;
     throw error;
@@ -115,32 +128,37 @@ exports.updatePost = async (req, res, next) => {
   const postId = req.params.postId;
   const title = req.body.title;
   const content = req.body.content;
-  let imageUrl = req.body.image;
-  if(req.file)
-  {
-    imageUrl = req.file.path;
-  }
+
   try {
     const post = await Post.findById(postId).populate('creator');
     if(!post)
         {
+          if(imageUrl) await deleteFile(imageUrl)
           const error = new Error("Could not find post!");
           error.statusCode = 404;
           throw error;
         }
     if(post.creator._id.toString() !== req.userId)
     {
+      if(imageUrl) await deleteFile(imageUrl)
       const error = new Error("Not authorized");
       error.statusCode = 403;
       throw error;
     }
-    if(imageUrl !== post.imageUrl)
-    {
-      clearImage(post.imageUrl);
-    }
     post.title = title;
-    post.imageUrl = imageUrl;
     post.content = content;
+    if(imageUrl)
+    {
+      await deleteImage(post.imageName)
+
+      const imageBuffer = await fs.promises.readFile(imageUrl);
+      const imageName = Date.now() + path.basename(imageUrl)
+      const imageLocation = await uploadImageToAWSS3(imageBuffer, imageName)
+      await deleteFile(imageUrl)
+
+      post.imageUrl = imageLocation;
+      post.imageName = imageName
+    }
     const result = await post.save();
     io.getIO().emit("posts", { action: "update", post: result})
     res.status(200).json({message: "Post updated!", post: result});
@@ -148,6 +166,11 @@ exports.updatePost = async (req, res, next) => {
   catch(err) {
     if(!err.statusCode)
     {
+      if(imageUrl){
+        fs.access(imageUrl, fs.constants.F_OK, (err) => {       
+          deleteFile(imageUrl)
+        });
+      }
       err.statusCode = 500;
     }
     next(err);
@@ -170,7 +193,7 @@ exports.deletePost = async (req, res, next) =>{
       error.statusCode = 403;
       throw error;
     }
-    clearImage(post.imageUrl);
+    deleteImage(post.imageName);
     const result = await Post.deleteOne({_id: postId});
     console.log(result);
     const user = await User.findById(req.userId);
@@ -237,9 +260,4 @@ exports.updateStatus = async (req, res, next) => {
     }
     next(err);
   }
-}
-
-const clearImage = filePath => {
-  filePath = path.join(__dirname, "..", filePath);
-  fs.unlink(filePath, err => console.log(err));
 }

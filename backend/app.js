@@ -51,7 +51,7 @@ app.use((error, req, res, next) =>{
     res.status(status).json({message: message, data: data});
 })
 
-mongoose.connect(`mongodb+srv://${process.env.USERNAME}}:${process.env.PASSWORD}@cluster0.ibftatx.mongodb.net/${process.env.DATAABSE}`)
+mongoose.connect(`mongodb+srv://${process.env.USERNAME}:${process.env.PASSWORD}@cluster0.ibftatx.mongodb.net/${process.env.DATABASE}`)
     .then(result =>
         {
             console.log("Connect MongooseDB successfully!");
